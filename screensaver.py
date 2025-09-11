@@ -676,24 +676,30 @@ tray_thread = None
 def cleanup_on_exit():
     """プログラム終了時に実行されるクリーンアップ処理"""
     global camera_thread, stop_camera_event, tray_icon, tray_thread
-    logging.info("クリーンアップ処理を開始します...")
+    logging.info("クリーンアップ処理を開始...")
 
-    if tray_icon:
+    # トレイアイコンとスレッドの停止
+    if tray_icon and tray_icon.visible:
         tray_icon.stop()
     if tray_thread and tray_thread.is_alive():
         tray_thread.join(timeout=2)
 
+    # カメラ監視スレッドの停止
     if camera_thread and camera_thread.is_alive():
         if stop_camera_event:
             stop_camera_event.set()
         camera_thread.join(timeout=2)
 
+    # Pygameの終了
     if pygame.get_init():
         pygame.quit()
-    logging.info("クリーンアップ処理が完了しました。")
+    logging.info("...クリーンアップ処理完了")
 
 def main(settings):
-    """メインの処理"""
+    """
+    メインの処理。
+    ユーザー操作によって終了した場合は True を、それ以外 (トレイからの終了など) の場合は False を返す。
+    """
     # スクリーンセーバーが再開されるたびにPygameを再初期化する
     pygame.init()
     INFO = pygame.display.Info() # 画面情報をここで取得
@@ -818,6 +824,7 @@ def main(settings):
     password_attempts = 0
     input_text = ""
 
+    user_interrupted = False # ユーザー操作による終了フラグ
     # 日本語表示のためのフォント設定
     # Windowsでは 'meiryo' や 'msgothic' が利用可能。'meiryo' を試し、失敗したらデフォルトフォントを使用。
     try:
@@ -893,7 +900,8 @@ def main(settings):
                         pygame.mouse.set_visible(True)
                     else:
                         # パスワードが無効なら、mainループを抜けて監視状態に戻る
-                        running = False
+                        user_interrupted = True # ユーザー操作による終了
+                        running = False # ループを抜ける
 
         # --- 描画処理 ---
         screen.fill(BLACK) # 毎フレーム画面を黒でクリア
@@ -1137,6 +1145,7 @@ def main(settings):
 
     logging.info("スクリーンセーバーを終了し、待機/監視モードに戻ります。")
     pygame.mouse.set_visible(True) # 監視ループに戻る前にマウスカーソルを表示
+    return user_interrupted
 
 def show_password_change_dialog(parent, current_hash):
     """
@@ -1203,6 +1212,10 @@ def show_password_change_dialog(parent, current_hash):
 
 
 def open_settings_gui():
+    # GUI内でプレビュー用にPygameを使用するため、最初に初期化する
+    if not pygame.get_init():
+        pygame.init()
+
     settings = load_settings()
 
     # この関数が返す設定値を保持する変数
@@ -2058,11 +2071,6 @@ if __name__ == '__main__':
     # ロギングを設定
     setup_logging()
 
-    # Pygameを初期化
-    pygame.init()
-    # プログラム終了時に必ずクリーンアップ関数が呼ばれるように登録
-    atexit.register(cleanup_on_exit)
-
     # まず設定を読み込む
     settings = load_settings()
     authenticated = True # デフォルトは認証済み
@@ -2072,6 +2080,9 @@ if __name__ == '__main__':
     is_config_mode = len(sys.argv) > 1 and sys.argv[1].lower() == '/c'
 
     if not is_config_mode and settings.get(CfgKey.PASSWORD_ENABLED) and settings.get(CfgKey.PASSWORD_HASH):
+        # 認証UIのためにPygameを初期化
+        if not pygame.get_init():
+            pygame.init()
         authenticated = authenticate_with_pygame_ui(settings)
         # 認証UIで使用したPygameディスプレイを閉じる。これにより次のGUIが正しく表示される。
         pygame.display.quit()
@@ -2079,39 +2090,49 @@ if __name__ == '__main__':
     if authenticated:
         # 認証成功後、設定GUIを開く
         new_settings = open_settings_gui()
+        
+        try:
+            # GUIが正常に終了し、かつ設定モードでない場合のみセーバーを開始
+            if new_settings is not None and not is_config_mode:
+                tray_thread = threading.Thread(target=setup_tray_icon)
+                tray_thread.start()
 
-        # GUIが正常に終了し、かつ設定モードでない場合のみセーバーを開始
-        if new_settings is not None and not is_config_mode:
-            tray_thread = threading.Thread(target=setup_tray_icon)
-            tray_thread.start()
+                while True: # メインの実行ループ
+                    # スクリーンセーバーを起動し、ユーザー操作で終了したかどうかの結果を受け取る
+                    user_exited = main(new_settings)
 
-            # 最初のスクリーンセーバーを起動
-            main(new_settings)
+                    # ユーザー操作で終了した場合、プログラム全体を終了する
+                    if user_exited:
+                        logging.info("ユーザー操作によりスクリーンセーバーが解除されたため、プログラムを終了します。")
+                        break # メインループを抜けて finally ブロックへ
 
-            # --- 無操作監視ループ ---
-            auto_restart = new_settings.get(CfgKey.AUTO_RESTART_ON_IDLE, DEFAULT_AUTO_RESTART_ON_IDLE)
-            idle_timeout_ms = new_settings.get(CfgKey.IDLE_TIMEOUT, IDLE_TIMEOUT)
+                    # トレイからの終了などで main が抜けた場合、無操作監視に入る
+                    # ただし、トレイアイコンが既に終了していたらループを抜ける
+                    if not tray_thread.is_alive():
+                        break
 
-            # Windowsかつwin32apiが利用可能で、設定が有効な場合のみ監視
-            if sys.platform == "win32" and win32api and auto_restart:
-                logging.info("無操作監視ループを開始します。")
-                while tray_thread.is_alive():
-                    try:
-                        # Windowsのアイドル時間を取得 (ミリ秒)
-                        idle_ms = win32api.GetTickCount() - win32api.GetLastInputInfo()
-                        # スリープ復帰後などにティックカウントがリセットされ、idle_msが負になることがあるため、その場合はリセットと見なす
-                        if idle_ms < 0:
-                            idle_ms = 0
+                    auto_restart = new_settings.get(CfgKey.AUTO_RESTART_ON_IDLE, DEFAULT_AUTO_RESTART_ON_IDLE)
+                    idle_timeout_ms = new_settings.get(CfgKey.IDLE_TIMEOUT, IDLE_TIMEOUT)
 
-                        if idle_ms > idle_timeout_ms:
-                            logging.info(f"無操作時間が{idle_timeout_ms / 1000}秒を超えたため、セーバーを再起動します。")
-                            main(new_settings)
-                        
-                        pygame.time.wait(1000) # 1秒ごとにチェック
-                    except Exception as e:
-                        logging.error(f"無操作監視ループでエラーが発生しました: {e}", exc_info=True)
-                        break # エラー発生時はループを抜ける
-            
-            # 監視ループが終わったら、スレッドが終了するのを待つ
-            if tray_thread.is_alive():
-                tray_thread.join()
+                    # Windowsかつwin32apiが利用可能で、設定が有効な場合のみ監視
+                    if sys.platform == "win32" and win32api and auto_restart:
+                        logging.info("無操作監視ループを開始します。")
+                        while tray_thread.is_alive():
+                            # Windowsのアイドル時間を取得 (ミリ秒)
+                            idle_ms = win32api.GetTickCount() - win32api.GetLastInputInfo()
+                            if idle_ms < 0: idle_ms = 0 # ティックカウントのリセット対策
+
+                            if idle_ms > idle_timeout_ms:
+                                logging.info(f"無操作時間が{idle_timeout_ms / 1000}秒を超えたため、セーバーを再起動します。")
+                                break # 無操作監視ループを抜けて、外側のメインループの先頭に戻る
+                            
+                            pygame.time.wait(1000) # 1秒ごとにチェック
+                    else:
+                        # 無操作監視が不要な場合、トレイが終了するまで待機
+                        if tray_thread.is_alive():
+                            tray_thread.join()
+                        break # 待機終了後、メインループを抜ける
+        finally:
+            # プログラムの最後に必ずクリーンアップ処理を呼び出す
+            cleanup_on_exit()
+            logging.info("プログラムを正常に終了しました。")
