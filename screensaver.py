@@ -345,50 +345,45 @@ def cleanup_old_captures(folder, retention_days):
 
 def exit_action(icon, item):
     """トレイアイコンの終了アクション"""
+    global program_should_exit
+    program_should_exit = True
     icon.stop()
     # カスタムの終了イベントをPygameのメインループに送る
-    pygame.event.post(pygame.event.Event(TRAY_QUIT_EVENT))
+    # pygame.event.post(pygame.event.Event(TRAY_QUIT_EVENT)) # 直接フラグを立てるため不要に
 
 def setup_tray_icon():
     """システムトレイにアイコンをセットアップし、別スレッドで実行する"""
-    global tray_icon
-    icon_path = None
-    image = None
+    global tray_icon, tray_icons
 
-    # まず.icoファイルを検索する
-    try:
-        for filename in os.listdir(BASE_PATH):
-            if filename.lower().endswith('.ico'):
-                icon_path = os.path.join(BASE_PATH, filename)
-                break  # 最初に見つかった.icoファイルを使用
-    except Exception as e:
-        logging.warning(f"アイコンファイル検索中にエラーが発生しました: {e}")
-
-    # .icoが見つからなければ.pngファイルを探す
-    if not icon_path:
+    # 状態ごとのアイコン画像を読み込む
+    def load_icon(filename, fallback_color):
         try:
-            for filename in os.listdir(BASE_PATH):
-                if filename.lower().endswith('.png'):
-                    icon_path = os.path.join(BASE_PATH, filename)
-                    break  # 最初に見つかった.pngファイルを使用
+            path = os.path.join(BASE_PATH, filename)
+            if os.path.exists(path):
+                return Image.open(path)
+            # .icoが見つからない場合、.pngを探す
+            path_png = os.path.splitext(path)[0] + ".png"
+            if os.path.exists(path_png):
+                return Image.open(path_png)
         except Exception as e:
-            logging.warning(f"アイコンファイル検索中にエラーが発生しました: {e}")
+            logging.warning(f"アイコン '{filename}' の読み込みに失敗: {e}")
+        # 最終的なフォールバック
+        return Image.new('RGB', (64, 64), fallback_color)
 
-    # 見つかったパスから画像を読み込む
-    if icon_path:
-        try:
-            image = Image.open(icon_path)
-            logging.info(f"トレイアイコンを読み込みました: {icon_path}")
-        except Exception as e:
-            logging.warning(f"トレイアイコン画像の読み込み中にエラーが発生しました: {e}")
-
-    # 画像が読み込めなかった場合、代替画像を生成
-    if image is None:
-        image = Image.new('RGB', (64, 64), 'blue') # アイコンが見つからない場合の代替
+    tray_icons['active'] = load_icon('icon_active.ico', 'red')
+    tray_icons['idle'] = load_icon('earth.ico', 'blue')
 
     menu = (pystray.MenuItem("完全に終了", exit_action),)
-    tray_icon = pystray.Icon("screensaver", image, "Python Screensaver", menu)
+    # 初期アイコンは待機(idle)状態とする
+    tray_icon = pystray.Icon("screensaver", tray_icons['idle'], "Python Screensaver (待機中)", menu)
     tray_icon.run()
+
+def update_tray_status(is_active):
+    """トレイアイコンとツールチップを更新する"""
+    if tray_icon and tray_icons:
+        new_status = 'active' if is_active else 'idle'
+        tray_icon.icon = tray_icons[new_status]
+        tray_icon.title = f"Python Screensaver ({'実行中' if is_active else '待機中'})"
 
 def get_image_files(folder):
     """指定されたフォルダからサポートされている画像ファイルのリストを取得する"""
@@ -672,6 +667,9 @@ camera_thread = None
 stop_camera_event = None
 tray_icon = None
 tray_thread = None
+camera_thread = None
+tray_icons = {} # 状態ごとのアイコン画像を保持する辞書
+program_should_exit = False # プログラム全体を終了すべきかどうかのフラグ
 
 def cleanup_on_exit():
     """プログラム終了時に実行されるクリーンアップ処理"""
@@ -698,10 +696,11 @@ def cleanup_on_exit():
 def main(settings):
     """
     メインの処理。
-    ユーザー操作によって終了した場合は True を、それ以外 (トレイからの終了など) の場合は False を返す。
+    ユーザー操作による解除は "user_exit"、プログラム終了要求は "program_exit"、監視継続は "continue_monitoring"、トレイからの終了要求は "tray_quit" を返す。
     """
     # スクリーンセーバーが再開されるたびにPygameを再初期化する
     pygame.init()
+    global camera_thread, stop_camera_event
     INFO = pygame.display.Info() # 画面情報をここで取得
     SCREEN_WIDTH = INFO.current_w
     SCREEN_HEIGHT = INFO.current_h
@@ -809,7 +808,7 @@ def main(settings):
             stop_event=stop_camera_event
         )
         camera_thread.start()
-    elif camera_enabled and not cv2:
+    elif camera_enabled and not cv2 and not getattr(main, "cv2_warning_shown", False):
         logging.warning("カメラ監視が有効ですが、OpenCVライブラリが見つかりません。")
         logging.warning("`pip install opencv-python` を実行してインストールしてください。")
 
@@ -824,7 +823,7 @@ def main(settings):
     password_attempts = 0
     input_text = ""
 
-    user_interrupted = False # ユーザー操作による終了フラグ
+    exit_reason = "user_exit" # デフォルトの終了理由はユーザー操作とする
     # 日本語表示のためのフォント設定
     # Windowsでは 'meiryo' や 'msgothic' が利用可能。'meiryo' を試し、失敗したらデフォルトフォントを使用。
     try:
@@ -847,6 +846,9 @@ def main(settings):
         # --- イベント処理 ---
         for event in pygame.event.get():
             # トレイアイコンからのカスタム終了イベントを処理
+            if program_should_exit:
+                running = False
+                exit_reason = "tray_quit"
             if event.type == TRAY_QUIT_EVENT:
                 running = False
                 continue
@@ -866,11 +868,12 @@ def main(settings):
                             "パスワードが一致しました。\nスクリーンセーバーを継続しますか？\n\"はい\"で待機状態に戻り、\"いいえ\"でプログラムを終了します。" # メッセージ
                         )
                         if choice: # 'はい'が選択された場合 (継続)
+                            exit_reason = "continue_monitoring"
                             running = False # mainループを抜けて監視状態に戻る
                         else: # 'いいえ'が選択された場合 (終了)
-                            if tray_icon:
-                                exit_action(tray_icon, None) # トレイアイコンも終了させる
+                            exit_reason = "program_exit"
                             running = False
+
                     else:
                         # パスワードが違う場合、入力内容をクリア
                         input_text = ""
@@ -900,7 +903,7 @@ def main(settings):
                         pygame.mouse.set_visible(True)
                     else:
                         # パスワードが無効なら、mainループを抜けて監視状態に戻る
-                        user_interrupted = True # ユーザー操作による終了
+                        # exit_reason はデフォルトで "user_exit" なので何もしない
                         running = False # ループを抜ける
 
         # --- 描画処理 ---
@@ -1145,7 +1148,14 @@ def main(settings):
 
     logging.info("スクリーンセーバーを終了し、待機/監視モードに戻ります。")
     pygame.mouse.set_visible(True) # 監視ループに戻る前にマウスカーソルを表示
-    return user_interrupted
+
+    # 待機モードに入る前にカメラを停止する
+    if camera_thread and camera_thread.is_alive():
+        if stop_camera_event:
+            stop_camera_event.set()
+        camera_thread.join(timeout=1) # タイムアウト付きで待機
+        camera_thread = None
+    return exit_reason
 
 def show_password_change_dialog(parent, current_hash):
     """
@@ -2097,41 +2107,46 @@ if __name__ == '__main__':
                 tray_thread = threading.Thread(target=setup_tray_icon)
                 tray_thread.start()
 
-                while True: # メインの実行ループ
+                # トレイアイコンの準備が少し遅れる可能性があるので待機
+                pygame.time.wait(500)
+
+                while not program_should_exit: # メインの実行ループ
                     # スクリーンセーバーを起動し、ユーザー操作で終了したかどうかの結果を受け取る
-                    user_exited = main(new_settings)
+                    exit_reason = main(new_settings)
+ 
+                    # プログラム終了が要求された場合
+                    if exit_reason == "program_exit":
+                        logging.info("ユーザーによりプログラムの終了が選択されました。")
+                        program_should_exit = True
+                        continue # ループの先頭に戻り、program_should_exitでループを抜ける
+                    elif exit_reason == "tray_quit":
+                        logging.info("トレイアイコンから終了が要求されました。")
+                        program_should_exit = True
+                        continue
+                    elif exit_reason == "continue_monitoring":
+                        logging.info("監視を継続します。")
+                        # 何もせず、無操作監視ループへ進む
+                    else: # "user_exit" またはその他の理由
+                        logging.info("ユーザー操作によりスクリーンセーバーが解除されました。")
+                        program_should_exit = True
+                        continue
 
-                    # ユーザー操作で終了した場合、プログラム全体を終了する
-                    if user_exited:
-                        logging.info("ユーザー操作によりスクリーンセーバーが解除されたため、プログラムを終了します。")
-                        break # メインループを抜けて finally ブロックへ
-
-                    # トレイからの終了などで main が抜けた場合、無操作監視に入る
-                    # ただし、トレイアイコンが既に終了していたらループを抜ける
-                    if not tray_thread.is_alive():
-                        break
-
+                    # --- 無操作監視ループ ---
                     auto_restart = new_settings.get(CfgKey.AUTO_RESTART_ON_IDLE, DEFAULT_AUTO_RESTART_ON_IDLE)
                     idle_timeout_ms = new_settings.get(CfgKey.IDLE_TIMEOUT, IDLE_TIMEOUT)
 
-                    # Windowsかつwin32apiが利用可能で、設定が有効な場合のみ監視
-                    if sys.platform == "win32" and win32api and auto_restart:
+                    if sys.platform == "win32" and win32api and auto_restart and not program_should_exit:
                         logging.info("無操作監視ループを開始します。")
-                        while tray_thread.is_alive():
-                            # Windowsのアイドル時間を取得 (ミリ秒)
+                        update_tray_status(is_active=False) # 待機状態にアイコンを変更
+                        while not program_should_exit:
                             idle_ms = win32api.GetTickCount() - win32api.GetLastInputInfo()
                             if idle_ms < 0: idle_ms = 0 # ティックカウントのリセット対策
-
                             if idle_ms > idle_timeout_ms:
                                 logging.info(f"無操作時間が{idle_timeout_ms / 1000}秒を超えたため、セーバーを再起動します。")
+                                update_tray_status(is_active=True) # 実行状態にアイコンを変更
                                 break # 無操作監視ループを抜けて、外側のメインループの先頭に戻る
                             
                             pygame.time.wait(1000) # 1秒ごとにチェック
-                    else:
-                        # 無操作監視が不要な場合、トレイが終了するまで待機
-                        if tray_thread.is_alive():
-                            tray_thread.join()
-                        break # 待機終了後、メインループを抜ける
         finally:
             # プログラムの最後に必ずクリーンアップ処理を呼び出す
             cleanup_on_exit()
