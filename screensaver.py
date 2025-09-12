@@ -370,13 +370,16 @@ def setup_tray_icon():
         # 最終的なフォールバック
         return Image.new('RGB', (64, 64), fallback_color)
 
-    tray_icons['active'] = load_icon('icon_active.ico', 'red')
+    # --- ↓↓↓ 任意のアイコン画像を辞書に格納 ↓↓↓ ---
+    tray_icons['active'] = load_icon('icon54.ico', 'red')
     tray_icons['idle'] = load_icon('earth.ico', 'blue')
-
+    
+    logging.info(f"アイコンの状態を読み込みました。")
     menu = (pystray.MenuItem("完全に終了", exit_action),)
     # 初期アイコンは待機(idle)状態とする
     tray_icon = pystray.Icon("screensaver", tray_icons['idle'], "Python Screensaver (待機中)", menu)
     tray_icon.run()
+    # --- ↑↑↑ 任意のアイコン画像を辞書に格納 ↑↑↑ ---
 
 def update_tray_status(is_active):
     """トレイアイコンとツールチップを更新する"""
@@ -683,10 +686,10 @@ def cleanup_on_exit():
         tray_thread.join(timeout=2)
 
     # カメラ監視スレッドの停止
-    if camera_thread and camera_thread.is_alive():
+    if camera_thread:
         if stop_camera_event:
             stop_camera_event.set()
-        camera_thread.join(timeout=2)
+        if camera_thread.is_alive(): camera_thread.join(timeout=2)
 
     # Pygameの終了
     if pygame.get_init():
@@ -818,14 +821,16 @@ def main(settings):
 
     # 状態管理: 'WAITING', 'SAVER_ACTIVE', 'PASSWORD_PROMPT'
     state = "SAVER_ACTIVE"
-    start_saver_active_mode()
-    last_activity_time = pygame.time.get_ticks()
     password_attempts = 0
     input_text = ""
+    last_activity_time = pygame.time.get_ticks()
+    start_saver_active_mode()
 
     exit_reason = "user_exit" # デフォルトの終了理由はユーザー操作とする
     # 日本語表示のためのフォント設定
     # Windowsでは 'meiryo' や 'msgothic' が利用可能。'meiryo' を試し、失敗したらデフォルトフォントを使用。
+
+
     try:
         prompt_font = pygame.font.SysFont("meiryo", password_ui_font_size)
         warning_font = pygame.font.SysFont("meiryo", int(password_ui_font_size / 2))
@@ -914,11 +919,15 @@ def main(settings):
             if saver_mode == SaverMode.BALLS:
                 # 全てのボールを移動
                 for ball in balls:
-                    wall_collision_info = ball.move()
-                    if wall_spark_enabled and wall_collision_info:
-                        # 壁との衝突で花火を生成
-                        num_particles = random.randint(5, 10) # 少なめに
-                        cx, cy, p_color = wall_collision_info
+                    try:
+                        wall_collision_info = ball.move()
+                        if wall_spark_enabled and wall_collision_info:
+                            # 壁との衝突で花火を生成
+                            num_particles = random.randint(5, 10) # 少なめに
+                            cx, cy, p_color = wall_collision_info
+                            for _ in range(num_particles):
+                                particles.append(Particle(cx, cy, p_color, particle_color_mode))
+                    except Exception:
                         for _ in range(num_particles):
                             particles.append(Particle(cx, cy, p_color, particle_color_mode))
 
@@ -1156,6 +1165,7 @@ def main(settings):
         camera_thread.join(timeout=1) # タイムアウト付きで待機
         camera_thread = None
     return exit_reason
+
 
 def show_password_change_dialog(parent, current_hash):
     """
@@ -2098,7 +2108,7 @@ if __name__ == '__main__':
         pygame.display.quit()
 
     if authenticated:
-        # 認証成功後、設定GUIを開く
+    # 認証成功後、設定GUIを開く
         new_settings = open_settings_gui()
         
         try:
@@ -2106,10 +2116,7 @@ if __name__ == '__main__':
             if new_settings is not None and not is_config_mode:
                 tray_thread = threading.Thread(target=setup_tray_icon)
                 tray_thread.start()
-
                 # トレイアイコンの準備が少し遅れる可能性があるので待機
-                pygame.time.wait(500)
-
                 while not program_should_exit: # メインの実行ループ
                     # スクリーンセーバーを起動し、ユーザー操作で終了したかどうかの結果を受け取る
                     exit_reason = main(new_settings)
