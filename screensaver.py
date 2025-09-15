@@ -6,12 +6,12 @@ import random
 import sys
 import json
 import hashlib # パスワードのハッシュ化用
-import os
+import os # ファイルパス操作用
 import colorsys # RGB<->HSV変換用
-import math
+import math # 数学関数用
 import shutil # ファイルのバックアップ用
-import threading
-import datetime
+import threading # スレッド処理用
+import datetime # 日付と時間の操作用
 import logging # ロギング用
 import logging.handlers # ロギングのハンドラ用
 import atexit # 終了時のクリーンアップ用
@@ -474,7 +474,8 @@ class MatrixStream:
         self.font_size = font_size 
         self.speed = speed
         self.screen_height = screen_height
-        self.length = random.randint(10, 30) # 文字列の長さ
+        # 文字列の長さを画面の高さに基づいて動的に決定
+        self.length = random.randint(screen_height // font_size, (screen_height // font_size) * 2)
         # ASCIIの表示可能文字（スペースを除く）
         self.characters = [chr(i) for i in range(33, 127)] # '!'(33) から '~'(126) まで
         self.symbols = [random.choice(self.characters) for _ in range(self.length)] # 初期文字列
@@ -752,12 +753,12 @@ def main(settings):
 
     # スライドショー用の変数
     image_files = []
-    current_image_index = 0
-    last_image_change_time = 0
+    current_image_index = 0 
+    last_image_change_time = 0 
     current_image_surface = None # 現在表示中の画像
     next_image_surface = None    # フェードインしてくる次の画像
-    is_fading = False
-    fade_start_time = 0
+    is_fading = False # フェード中かどうか
+    fade_start_time = 0 
 
     # ラインアート用の変数
     lines = []
@@ -815,7 +816,6 @@ def main(settings):
         logging.warning("カメラ監視が有効ですが、OpenCVライブラリが見つかりません。")
         logging.warning("`pip install opencv-python` を実行してインストールしてください。")
 
-
     clock = pygame.time.Clock()
     running = True
 
@@ -829,7 +829,6 @@ def main(settings):
     exit_reason = "user_exit" # デフォルトの終了理由はユーザー操作とする
     # 日本語表示のためのフォント設定
     # Windowsでは 'meiryo' や 'msgothic' が利用可能。'meiryo' を試し、失敗したらデフォルトフォントを使用。
-
 
     try:
         prompt_font = pygame.font.SysFont("meiryo", password_ui_font_size)
@@ -887,7 +886,7 @@ def main(settings):
                             force_shutdown(settings)
                             running = False # シャットダウンコマンド発行後にループを抜ける
 
-                elif event.key == pygame.K_BACKSPACE:
+                elif event.key == pygame.K_BACKSPACE: 
                     input_text = input_text[:-1]
                 else:
                     input_text += event.unicode
@@ -1539,12 +1538,12 @@ def open_settings_gui():
     def toggle_camera_settings_state_and_tab():
         """カメラ設定UIの有効/無効を切り替える"""
         state = "normal" if camera_enabled_var.get() and cv2 else "disabled"
-        camera_device_combo.config(state=state)
-        capture_folder_entry.config(state=state)
-        capture_folder_button.config(state=state)
-        motion_threshold_entry.config(state=state)
-        retention_days_entry.config(state=state)
-        delete_button.config(state=state)
+        camera_device_combo.config(state=state) # デバイス選択コンボボックス
+        capture_folder_entry.config(state=state) # キャプチャ保存先入力フィールド
+        capture_folder_button.config(state=state) # キャプチャ保存先選択ボタン
+        motion_threshold_entry.config(state=state) # 動き検知感度入力フィールド
+        retention_days_entry.config(state=state) # 保存日数入力フィールド
+        delete_button.config(state=state) # キャプチャ全削除ボタン
         # タブの表示状態も更新
         notebook.tab(5, state=state)
 
